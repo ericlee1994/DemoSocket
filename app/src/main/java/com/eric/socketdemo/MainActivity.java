@@ -9,77 +9,94 @@ import android.util.Log;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.net.Socket;
 import java.net.UnknownHostException;
 
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "MainActivity";
+    public MyHandler mHandler;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        mHandler = new MyHandler(this);
+
         mCardInfoReceive = new CardInfoReceive();
         mCardInfoThd = new Thread(mCardInfoReceive);
         mCardInfoThd.start();
 
     }
-    Thread mCardInfoThd = null;
-    SynTimeThread synTimeThread = null;
-    CardInfoReceive mCardInfoReceive = null;
-    public String mCardNum;
+
     public String server_ip = "172.17.16.26";
-    public int server_port = 903;
-    public boolean isSocketConnect = false;
-    public boolean isSocketClose;
-    public int timeCount = 0;
-    public int timeInterval = 60;
-    public boolean isNeedSendHeart;
     public String timeSyc = "F10000000011000000000C000000000000";
+    //	public String server_ip = "192.168.150.202";
+    public String mCardNum = null;
+    public int server_port = 903;
+    public int timeCount = 0;
+    public int timeInterval = 5;
+    public int cardID;
+    public int reConnectTime = 30 * 1000;
+    public boolean ret;
+    public boolean isSocketConnect = false;
+    public boolean isReconnect = true;
+    public boolean isNeedSendHeart;
+    public boolean isDestroy = false;
     public InputStream in;
     public OutputStream out;
+    public Socket socket;
+    Thread mCardInfoThd = null;
+    SynTimeThread synTimeThread = new SynTimeThread();
+    CardInfoReceive mCardInfoReceive = null;
+
 
     private static final int MSG_CARD_NO = 0x01;
     private static final int MSG_TIME_COUNT = 0x02;
-    Handler mHandler = new Handler() {
+
+    static class MyHandler extends Handler {
+        WeakReference<MainActivity> mActivityReference;
+
+        MyHandler(MainActivity activity) {
+            mActivityReference = new WeakReference<>(activity);
+        }
+
         @Override
         public void handleMessage(Message msg) {
             super.handleMessage(msg);
+            MainActivity activity = mActivityReference.get();
             switch (msg.what) {
                 case MSG_TIME_COUNT:
-                    timeCount ++ ;
-                    requestCountTime();
-                    if (timeCount > timeInterval) {
-                        isNeedSendHeart = true;
-                        timeCount = 0;
-                        synTimeThread = new SynTimeThread();
-                        synTimeThread.start();
+                    activity.timeCount++;
+                    activity.requestCountTime();
+                    if (activity.timeCount > activity.timeInterval) {
+                        activity.isNeedSendHeart = true;
+                        activity.timeCount = 0;
+                        activity.synTimeThread.start();
                     }
                     break;
-                case MSG_CARD_NO:
-
-
-                    break;
-                    default:
-                        break;
             }
         }
-    };
+    }
 
     class CardInfoReceive implements Runnable {
         private boolean running;
-        public CardInfoReceive() { running = true; }
-        public void setStop() {
+        private CardInfoReceive() { running = true; }
+        private void setStop() {
             running = false;
         }
         @Override
         public void run() {
             while (running) {
-                boolean ret = connect();
+                ret = connect();
                 while (!ret) {
-                    ret = connect();
+//					ret = connect();
+                    release();
+                    if (isDestroy){
+                        break;
+                    }
                 }
             }
         }
@@ -90,72 +107,76 @@ public class MainActivity extends AppCompatActivity {
             Log.e(TAG, "connect ip:" + server_ip + ":"+ server_port);
             mHandler.removeMessages(MSG_TIME_COUNT);
 
-            Socket socket = new Socket(server_ip, server_port);
+            socket = new Socket(server_ip, server_port);
             isSocketConnect = socket.isConnected();
-            isSocketClose = socket.isClosed();
             in = socket.getInputStream();
             out = socket.getOutputStream();
             byte[] buffer = new byte[100];
             startHeartBeat();
-            while (!isSocketClose && !socket.isInputShutdown() && isSocketConnect) {
+            Log.e(TAG, "wait for card buffer");
+            in.read(buffer);
+            Log.e(TAG, "array:" + Integer.toHexString(buffer[33]) + " " +Integer.toHexString(buffer[34]) + " " + Integer.toHexString(buffer[35]) + " " + Integer.toHexString(buffer[36]));
+            byte[] cardIdByte = new byte[4];
+            cardIdByte[0] = buffer[33];
+            cardIdByte[1] = buffer[34];
+            cardIdByte[2] = buffer[35];
+            cardIdByte[3] = buffer[36];
 
-                if ((in.read()) != -1) {
-                    in.read(buffer);
+            mCardNum = null;
 
-//					for (int i = 0; i < buffer.length; i++) {
-//						String a = Integer.toHexString(buffer[i]);
-//						Log.e(TAG, "array:" + a);
-//					}
-                    byte[] cardIdByte = new byte[4];
-                    cardIdByte[0] = buffer[32];
-                    cardIdByte[1] = buffer[33];
-                    cardIdByte[2] = buffer[34];
-                    cardIdByte[3] = buffer[35];
+            cardID = byteArrayToInt(cardIdByte);
+            mCardNum = cardID + "";
+            Log.e(TAG, "mCardNum" + mCardNum);
+            Message msg = new Message();
+            msg.what = MSG_CARD_NO;
+            msg.obj = mCardNum;
+            mHandler.sendMessage(msg);
 
-                    mCardNum = null;
-
-                    for (int i = 0; i < cardIdByte.length; i++) {
-                        String a = Integer.toHexString(cardIdByte[i]);
-                        if (a .equals("0")) {
-                            a = "00";
-                        }
-                        mCardNum = mCardNum + a;
-                        Log.e(TAG, "cardIdByte:" + a);
-                    }
-
-//					cardID = byteArrayToInt(cardIdByte);
-//					mCardNum = new String(cardIdByte);
-                    Log.e(TAG, "mCardNum" + mCardNum);
-                    Message msg = new Message();
-                    msg.what = MSG_CARD_NO;
-                    msg.obj = mCardNum;
-                    mHandler.sendMessage(msg);
-
-                }
-
-            }
         } catch (UnknownHostException e) {
             Log.e(TAG, "UnknownHostException:" + e.toString());
             isSocketConnect = false;
-            connect();
         } catch (IOException e) {
             Log.e(TAG, "IOException:" + e.toString());
             isSocketConnect = false;
-            connect();
         } catch (Exception e) {
             Log.e(TAG, "Exception:" + e.toString());
             isSocketConnect = false;
-            connect();
         }
 
         return isSocketConnect;
+    }
+
+    public void release() {
+        Log.e(TAG, "socket release");
+        try {
+            if (in != null) {
+                in.close();
+            }
+            in = null;
+            if (out != null) {
+                out.close();
+            }
+            out = null;
+
+            if (socket != null) {
+                socket.close();
+            }
+            socket = null;
+            if (isReconnect) {
+                Thread.sleep(reConnectTime);
+                Log.e(TAG, "try to reconnect socket");
+                ret = connect();
+            }
+        }catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     class  SynTimeThread extends Thread {
         @Override
         public void run() {
             super.run();
-            if (isNeedSendHeart) {
+            if (isNeedSendHeart && !isDestroy) {
                 Log.e(TAG, "send Time Syc");
                 try {
                     out.write(toBytes(timeSyc));
@@ -174,6 +195,9 @@ public class MainActivity extends AppCompatActivity {
             mCardInfoReceive.setStop();
             mCardInfoReceive = null;
         }
+        isReconnect = false;
+        isNeedSendHeart = false;
+        release();
     }
 
     public void startHeartBeat() {
@@ -208,4 +232,9 @@ public class MainActivity extends AppCompatActivity {
         return bytes;
     }
 
+    @Override
+    protected void onDestroy() {
+        stopCardReceive();
+        super.onDestroy();
+    }
 }
